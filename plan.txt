@@ -1,0 +1,13 @@
+Final Architecture Overview:
+
+Backend: GoLang, WebSockets (gorilla/websocket), Goroutines/Channels, JWT for Authentication, Database (MongoDB).
+
+Frontend: React/Vue/Angular with WebSockets for real-time messaging.
+
+Database: PostgreSQL/MySQL (relational) or MongoDB (NoSQL) for storing user and message data.
+
+Message Broker (Optional): Redis Pub/Sub or Kafka for scaling message broadcasting.
+
+Security: SSL/TLS, JWT Authentication.
+
+Deployment: Docker, Kubernetes,
