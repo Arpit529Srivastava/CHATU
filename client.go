@@ -39,3 +39,4 @@ func (c *Client) readMessage(){
 		log.Println(string(payload))
 	}
 }
+// starting with concurrency
