@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <link rel="stylesheet" href="styles.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CHATU!!</title>
+  </head>
+  <body>
+    <div class="center">
+      <h1>CHATU A BEST PLACE CHAT TO WITH YOUR FRIENDS</h1>
+      <h3 id="chat-header">currently in chat : general</h3>
+      <form id="chatroom-selection">
+        <label for="chatroom">Chatroom:</label>
+        <input type="text" id="chatroom" name="chatroom" /><br /><br />
+        <input type="submit" value="Change chatroom" />
+      </form>
+      <br />
+      <textarea
+        class="messagearea"
+        id="chatmessages"
+        readonly
+        name="chatmessages"
+        rows="4"
+        cols="50"
+        placeholder="Welcome to chatroom"
+      ></textarea>
+      <br />
+      <form id="chatroom-message">
+        <label for="message">Message:</label>
+        <input type="text" id="message" name="message" /><br /><br />
+        <input type="submit" value="Change Chatroom" />
+      </form>
+    </div>
+    <script src="chat.js"></script>
+
+  </body>
+</html>
