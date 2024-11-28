@@ -10,6 +10,7 @@
     <div class="center">
       <h1>CHATU A BEST PLACE CHAT TO WITH YOUR FRIENDS</h1>
       <h3 id="chat-header">currently in chat : general</h3>
+      <h3 id="connection-header">Connected to websockets:</h3>
       <form id="chatroom-selection">
         <label for="chatroom">Chatroom:</label>
         <input type="text" id="chatroom" name="chatroom" /><br /><br />
@@ -31,8 +32,16 @@
         <input type="text" id="message" name="message" /><br /><br />
         <input type="submit" value="Send message" />
       </form>
+      <div id="login-section">
+        <form id="login-form">
+          <label for="username">Username:</label>
+          <input type="text" id="username" name="username"><br>
+          <label for="password">Password:</label>
+          <input type="password" id="password" name="password"><br><br>
+          <input type="submit" value="Login">
+        </form>
+      </div>
     </div>
     <script src="chat.js"></script>
-
   </body>
 </html>

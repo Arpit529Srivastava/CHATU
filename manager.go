@@ -1,108 +1,191 @@
 package main
 
 import (
-	//"encoding/json"
+	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"sync"
+	"time"
+
 	"github.com/gorilla/websocket"
 )
 
 var (
+	/**
+	websocketUpgrader is used to upgrade incomming HTTP requests into a persitent websocket connection
+	*/
 	websocketUpgrader = websocket.Upgrader{
+		// Apply the Origin Checker
+		CheckOrigin:     checkOrigin,
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
-		CheckOrigin:     checkOrigin, // allowing only the http://localhost (adjust for security)
 	}
 )
 
-type Manager struct {
-	clients  ClientList
-	handlers map[string]EventHandler
-	sync.RWMutex
+var (
+	ErrEventNotSupported = errors.New("this event type is not supported")
+)
+
+// checkOrigin will check origin and return true if its allowed
+func checkOrigin(r *http.Request) bool {
+
+	// Grab the request origin
+	origin := r.Header.Get("Origin")
+
+	switch origin {
+	// Update this to HTTPS
+	case "https://localhost:8080":
+		return true
+	default:
+		return false
+	}
 }
 
-// Creates a new Manager instance
-func NewManager() *Manager {
+// Manager is used to hold references to all Clients Registered, and Broadcasting etc
+type Manager struct {
+	clients ClientList
+
+	// Using a syncMutex here to be able to lcok state before editing clients
+	// Could also use Channels to block
+	sync.RWMutex
+	// handlers are functions that are used to handle Events
+	handlers map[string]EventHandler
+	// otps is a map of allowed OTP to accept connections from
+	otps RetentionMap
+}
+
+// NewManager is used to initalize all the values inside the manager
+func NewManager(ctx context.Context) *Manager {
 	m := &Manager{
 		clients:  make(ClientList),
 		handlers: make(map[string]EventHandler),
+		// Create a new retentionMap that removes Otps older than 5 seconds
+		otps: NewRetentionMap(ctx, 5*time.Second),
 	}
 	m.setupEventHandlers()
 	return m
 }
 
-// Registers event handlers
+// setupEventHandlers configures and adds all handlers
 func (m *Manager) setupEventHandlers() {
-	m.handlers[EventSendMessage] = SendMessage
+	m.handlers[EventSendMessage] = SendMessageHandler
+	m.handlers[EventChangeRoom] = ChatRoomHandler
 }
 
-// Example handler for "send_message" events
-func SendMessage(event Event, c *Client) error {
-	fmt.Println(event)
-	return nil
-}
-
-// Routes an event to the appropriate handler
+// routeEvent is used to make sure the correct event goes into the correct handler
 func (m *Manager) routeEvent(event Event, c *Client) error {
-	if handler, exists := m.handlers[event.Type]; exists {
-		return handler(event, c)
+	// Check if Handler is present in Map
+	if handler, ok := m.handlers[event.Type]; ok {
+		// Execute the handler and return any err
+		if err := handler(event, c); err != nil {
+			return err
+		}
+		return nil
+	} else {
+		return ErrEventNotSupported
 	}
-	log.Printf("No handler found for event type: %s", event.Type)
-	return errors.New("unknown event type")
 }
 
-// Serves WebSocket connections
-func (m *Manager) serveWS(w http.ResponseWriter, r *http.Request) {
-	log.Println("New WebSocket connection established")
-	conn, err := websocketUpgrader.Upgrade(w, r, nil)
+// loginHandler is used to verify an user authentication and return a one time password
+func (m *Manager) loginHandler(w http.ResponseWriter, r *http.Request) {
+
+	type userLoginRequest struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	var req userLoginRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
-		log.Printf("Failed to upgrade connection: %v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client := NewClient(conn, m)
-	m.addClient(client)
-	go client.readMessage()
-	go client.writeMessage()
-}
-func (m *Manager) addClient(client *Client) {
-	m.Lock()
-	defer m.Unlock()
-	m.clients[client] = true
-	log.Printf("Client added. Total clients: %d", len(m.clients))
+
+	// Authenticate user / Verify Access token, what ever auth method you use
+	if req.Username == "percy" && req.Password == "123" {
+		// format to return otp in to the frontend
+		type response struct {
+			OTP string `json:"otp"`
+		}
+
+		// add a new OTP
+		otp := m.otps.NewOTP()
+
+		resp := response{
+			OTP: otp.Key,
+		}
+
+		data, err := json.Marshal(resp)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		// Return a response to the Authenticated user with the OTP
+		w.WriteHeader(http.StatusOK)
+		w.Write(data)
+		return
+	}
+
+	// Failure to auth
+	w.WriteHeader(http.StatusUnauthorized)
 }
 
+// serveWS is a HTTP Handler that the has the Manager that allows connections
+func (m *Manager) serveWS(w http.ResponseWriter, r *http.Request) {
+
+	// Grab the OTP in the Get param
+	otp := r.URL.Query().Get("otp")
+	if otp == "" {
+		// Tell the user its not authorized
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	// Verify OTP is existing
+	if !m.otps.VerifyOTP(otp) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	log.Println("New connection")
+	// Begin by upgrading the HTTP request
+	conn, err := websocketUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	// Create New Client
+	client := NewClient(conn, m)
+	// Add the newly created client to the manager
+	m.addClient(client)
+
+	go client.readMessages()
+	go client.writeMessages()
+}
+
+// addClient will add clients to our clientList
+func (m *Manager) addClient(client *Client) {
+	// Lock so we can manipulate
+	m.Lock()
+	defer m.Unlock()
+
+	// Add Client
+	m.clients[client] = true
+}
+
+// removeClient will remove the client and clean up
 func (m *Manager) removeClient(client *Client) {
 	m.Lock()
 	defer m.Unlock()
-	if _, exists := m.clients[client]; exists {
+
+	// Check if Client exists, then delete it
+	if _, ok := m.clients[client]; ok {
+		// close connection
 		client.connection.Close()
+		// remove
 		delete(m.clients, client)
-		log.Printf("Client removed. Total clients: %d", len(m.clients))
-	}
-}
-
-// Broadcasts an event to all connected clients
-// func (m *Manager) broadcast(event Event) {
-// 	m.RLock()
-// 	defer m.RUnlock()
-// 	for client := range m.clients {
-// 		select {
-// 		case client.egress <- event:
-// 		default:
-// 			log.Println("Client egress channel full, dropping event")
-// 		}
-// 	}
-// }
-
-func checkOrigin(r *http.Request) bool{
-	origin := r.Header.Get(("Origin"))
-	switch origin {
-	case "http://localhost:8080": // is to limit where your client can connect
-		return true
-	default :
-	return false	
 	}
 }
