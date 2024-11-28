@@ -39,6 +39,10 @@ func (c *Client) readMessage() {
 			}
 			break
 		}
+		// just a hack ;)
+		for wsclient := range c.manager.clients{
+			wsclient.egress <- payload
+		}
 		log.Println(messageType)
 		log.Println(string(payload))
 	}

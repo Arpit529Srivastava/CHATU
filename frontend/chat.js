@@ -24,6 +24,9 @@ window.onload = function () {
     console.log("browser supports websockets");
     //connecting to websockets
     conn = new WebSocket("ws://" + document.location.host + "/ws"); // here ws is used to do the api connection
+    conn.onmessage = function(evt){
+        console.log(evt)
+    }
   } else {
     alert("browser does not support websocket");
   }

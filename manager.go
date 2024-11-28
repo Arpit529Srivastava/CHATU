@@ -38,6 +38,7 @@ func (m *Manager) serveWS(w http.ResponseWriter, r *http.Request) {
 	m.addClient(client)
 	// go-routine entered the chats
 	go client.readMessage()
+	go client.writeMessage()
 
 }
 
