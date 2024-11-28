@@ -1,69 +1,123 @@
-// it will handle, whenever we are connecting to a new room it will create a client for in the backend
 package main
 
 import (
+	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
+// ping interval should be lower than the pong wait
+// we are providing a 90% time frame to wait
+var (
+	pongWait     = 10 * time.Second
+	pingInterval = (pongWait * 9) / 10
+)
+
 type ClientList map[*Client]bool
+
 type Client struct {
 	connection *websocket.Conn
 	manager    *Manager
-	// we are using egress for avoiding concurrencies write on the connection
-	egress chan []byte
+	egress     chan Event
 }
 
+// Constructor for creating a new Client instance
 func NewClient(conn *websocket.Conn, manager *Manager) *Client {
 	return &Client{
 		connection: conn,
 		manager:    manager,
-		egress: make(chan []byte),
+		egress:     make(chan Event),
 	}
 }
 
-// reading and writing the messages
-// websockets only allow one at a time not simultaneously
-func (c *Client) readMessage() {
-	defer func() {
-		//cleaning up the connection
-		c.manager.removeClient(c)
-	}()
-	for {
-		messageType, payload, err := c.connection.ReadMessage()
+// Gracefully shuts down the client
+func (c *Client) shutdown() {
+	log.Println("Shutting down client")
+	c.manager.removeClient(c)
 
+	// Close the egress channel to signal write goroutine to stop
+	close(c.egress)
+
+	// Close the WebSocket connection
+	if err := c.connection.Close(); err != nil {
+		log.Printf("Error closing WebSocket connection: %v", err)
+	}
+}
+
+// Handles incoming messages from the client
+func (c *Client) readMessage() {
+	defer c.shutdown()
+
+	if err := c.connection.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		log.Println("Error setting read deadline:", err)
+		return
+	}
+
+	c.connection.SetPongHandler(func(appData string) error {
+		log.Println("Received pong")
+		return c.connection.SetReadDeadline(time.Now().Add(pongWait))
+	})
+
+	for {
+		_, payload, err := c.connection.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("error while reading message : %v", err)
+				log.Printf("Unexpected close error: %v", err)
+			} else {
+				log.Println("Connection closed by client")
 			}
 			break
 		}
-		// just a hack ;)
-		for wsclient := range c.manager.clients{
-			wsclient.egress <- payload
+
+		var request Event
+		if err := json.Unmarshal(payload, &request); err != nil {
+			log.Printf("Error unmarshalling event: %v", err)
+			continue
 		}
-		log.Println(messageType)
-		log.Println(string(payload))
+
+		if err := c.manager.routeEvent(request, c); err != nil {
+			log.Printf("Error handling event: %v", err)
+		}
 	}
 }
 
-// starting with concurrency
-func (c *Client) writeMessage(){
-	defer func(){
-		c.manager.removeClient((c))
-	}()
+// Handles outgoing messages to the client
+func (c *Client) writeMessage() {
+	defer c.shutdown()
+
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case message, ok := <-c.egress:
 			if !ok {
-				if err := c.connection.WriteMessage(websocket.CloseMessage, nil); err != nil{
-					log.Println("connection id closed :", err)
-				} 
+				// Channel closed, send close message
+				if err := c.connection.WriteMessage(websocket.CloseMessage, nil); err != nil {
+					log.Printf("Error sending close message: %v", err)
+				}
 				return
 			}
-			if err := c.connection.WriteMessage(websocket.TextMessage, message); err != nil {
-				log.Printf("failed to send message : %v", err)
+
+			data, err := json.Marshal(message)
+			if err != nil {
+				log.Printf("Error marshalling message: %v", err)
+				continue
+			}
+
+			if err := c.connection.WriteMessage(websocket.TextMessage, data); err != nil {
+				log.Printf("Error sending message: %v", err)
+				return
+			}
+			log.Println("Message sent successfully")
+
+		case <-ticker.C:
+			log.Println("Sending ping")
+			if err := c.connection.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+				log.Printf("Error sending ping: %v", err)
+				return
 			}
 		}
 	}
