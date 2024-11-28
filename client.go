@@ -59,6 +59,7 @@ func (c *Client) readMessage() {
 		log.Println("Received pong")
 		return c.connection.SetReadDeadline(time.Now().Add(pongWait))
 	})
+	c.connection.SetReadLimit(512) // setting the limit for sending the message
 
 	for {
 		_, payload, err := c.connection.ReadMessage()

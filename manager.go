@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"sync"
-
 	"github.com/gorilla/websocket"
 )
 
@@ -15,7 +14,7 @@ var (
 	websocketUpgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
-		CheckOrigin:     func(r *http.Request) bool { return true }, // Allow all origins (adjust for security)
+		CheckOrigin:     checkOrigin, // allowing only the http://localhost (adjust for security)
 	}
 )
 
@@ -97,3 +96,13 @@ func (m *Manager) removeClient(client *Client) {
 // 		}
 // 	}
 // }
+
+func checkOrigin(r *http.Request) bool{
+	origin := r.Header.Get(("Origin"))
+	switch origin {
+	case "http://localhost:8080": // is to limit where your client can connect
+		return true
+	default :
+	return false	
+	}
+}
