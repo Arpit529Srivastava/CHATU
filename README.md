@@ -1,3 +1,7 @@
-# Projetc idea!!
+# A example project using a WebSocket API in go
 
-### Making a chat web application using Go, web-sockets, docker, user authentication using JWT tokens etc
+To run this example, please make sure to generate the self signed cert first.
+
+```bash
+bash certgen.bash
+``` 

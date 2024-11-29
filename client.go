@@ -2,98 +2,111 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"log"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
-// Event is the Messages sent over the websocket
-// Used to differ between different actions
-type Event struct {
-	// Type is the message type sent
-	Type string `json:"type"`
-	// Payload is the data Based on the Type
-	Payload json.RawMessage `json:"payload"`
+type ClientList map[*Client]bool
+
+type Client struct {
+	connection *websocket.Conn
+	manager *Manager
+	egress chan Event
+	chatroom string
 }
 
-
-
-// EventHandler is a function signature that is used to affect messages on the socket and triggered
-// depending on the type
-type EventHandler func(event Event, c *Client) error
-
-const (
-	// EventSendMessage is the event name for new chat messages sent
-	EventSendMessage = "send_message"
-	// EventNewMessage is a response to send_message
-	EventNewMessage = "new_message"
-	// EventChangeRoom is event when switching rooms
-	EventChangeRoom = "change_room"
+var (
+	pongWait = 10 * time.Second
+	pingInterval = (pongWait * 9) / 10
 )
 
-// SendMessageEvent is the payload sent in the
-// send_message event
-type SendMessageEvent struct {
-	Message string `json:"message"`
-	From    string `json:"from"`
+func NewClient(conn *websocket.Conn, manager *Manager) *Client {
+	return &Client{
+		connection: conn,
+		manager:    manager,
+		egress:     make(chan Event),
+	}
 }
 
-// NewMessageEvent is returned when responding to send_message
-type NewMessageEvent struct {
-	SendMessageEvent
-	Sent time.Time `json:"sent"`
+func (c *Client) readMessages() {
+	defer func() {
+		c.manager.removeClient(c)
+	}()
+	c.connection.SetReadLimit(512)
+	if err := c.connection.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		log.Println(err)
+		return
+	}
+	c.connection.SetPongHandler(c.pongHandler)
+	for {
+		_, payload, err := c.connection.ReadMessage()
+
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("error reading message: %v", err)
+			}
+			break 
+		}
+		var request Event
+		if err := json.Unmarshal(payload, &request); err != nil {
+			log.Printf("error marshalling message: %v", err)
+			break 
+		}
+		if err := c.manager.routeEvent(request, c); err != nil {
+			log.Println("Error handeling Message: ", err)
+		}
+	}
+}
+func (c *Client) pongHandler(pongMsg string) error {
+	// Current time + Pong Wait time
+	log.Println("pong")
+	return c.connection.SetReadDeadline(time.Now().Add(pongWait))
 }
 
+// writeMessages is a process that listens for new messages to output to the Client
+func (c *Client) writeMessages() {
+	// Create a ticker that triggers a ping at given interval
+	ticker := time.NewTicker(pingInterval)
+	defer func() {
+		ticker.Stop()
+		// Graceful close if this triggers a closing
+		c.manager.removeClient(c)
+	}()
 
+	for {
+		select {
+		case message, ok := <-c.egress:
+			// Ok will be false Incase the egress channel is closed
+			if !ok {
+				// Manager has closed this connection channel, so communicate that to frontend
+				if err := c.connection.WriteMessage(websocket.CloseMessage, nil); err != nil {
+					// Log that the connection is closed and the reason
+					log.Println("connection closed: ", err)
+				}
+				// Return to close the goroutine
+				return
+			}
 
-// SendMessageHandler will send out a message to all other participants in the chat
-func SendMessageHandler(event Event, c *Client) error {
-	// Marshal Payload into wanted format
-	var chatevent SendMessageEvent
-	if err := json.Unmarshal(event.Payload, &chatevent); err != nil {
-		return fmt.Errorf("bad payload in request: %v", err)
-	}
-
-	// Prepare an Outgoing Message to others
-	var broadMessage NewMessageEvent
-
-	broadMessage.Sent = time.Now()
-	broadMessage.Message = chatevent.Message
-	broadMessage.From = chatevent.From
-
-	data, err := json.Marshal(broadMessage)
-	if err != nil {
-		return fmt.Errorf("failed to marshal broadcast message: %v", err)
-	}
-
-	// Place payload into an Event
-	var outgoingEvent Event
-	outgoingEvent.Payload = data
-	outgoingEvent.Type = EventNewMessage
-	// Broadcast to all other Clients
-	for client := range c.manager.clients {
-		// Only send to clients inside the same chatroom
-		if client.chatroom == c.chatroom {
-			client.egress <- outgoingEvent
+			data, err := json.Marshal(message)
+			if err != nil {
+				log.Println(err)
+				return // closes the connection, should we really
+			}
+			// Write a Regular text message to the connection
+			if err := c.connection.WriteMessage(websocket.TextMessage, data); err != nil {
+				log.Println(err)
+			}
+			log.Println("sent message")
+		case <-ticker.C:
+			log.Println("ping")
+			// Send the Ping
+			if err := c.connection.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+				log.Println("writemsg: ", err)
+				return // return to break this goroutine triggeing cleanup
+			}
 		}
 
 	}
-	return nil
-}
-
-type ChangeRoomEvent struct {
-	Name string `json:"name"`
-}
-
-// ChatRoomHandler will handle switching of chatrooms between clients
-func ChatRoomHandler(event Event, c *Client) error {
-	// Marshal Payload into wanted format
-	var changeRoomEvent ChangeRoomEvent
-	if err := json.Unmarshal(event.Payload, &changeRoomEvent); err != nil {
-		return fmt.Errorf("bad payload in request: %v", err)
-	}
-
-	// Add Client to chat room
-	c.chatroom = changeRoomEvent.Name
-
-	return nil
 }
