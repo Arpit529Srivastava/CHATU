@@ -35,8 +35,8 @@ https://localhost:8080.
 ### Login: Use the following credentials to log in:
 
 ```
-Username: percy
-Password: 123
+Username: ENV
+Password: ENV
 ```
 ### 
 Send a message: Type your message in the input field and click send.
